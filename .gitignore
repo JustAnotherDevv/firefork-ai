@@ -1,0 +1,78 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/build/
+/dist/
+
+# Test output
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Results — keep dir + demo artefacts (CSVs + PNGs are pitch material)
+/results/*
+!/results/.gitkeep
+!/results/README.md
+!/results/*.csv
+!/results/*.png
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Firecracker / VM artifacts (huge files, host-specific)
+*.img
+*.ext4
+*.gguf
+vmlinux-*
+/var/
+/srv/
+
+# =====================================================================
+# Multipass internal state — NEVER COMMIT
+# =====================================================================
+# This directory holds the running Multipass daemon's SSH private keys,
+# vault, certificates, and VM disk images. It must NEVER end up in git.
+#
+# Preferred: move it OUT of the repo tree entirely:
+#     mv multipass-data/ ~/.firefork-state/multipass-data/
+# (Stop the multipass daemon first — files are locked while it runs.)
+#
+# CI has a tripwire that fails the build if anything under multipass-data/
+# ever becomes tracked. See .github/workflows/ci.yml.
+# =====================================================================
+/multipass-data/
+multipass-data/
+/**/multipass-data/
+
+# goreleaser release artefacts
+/dist/
+
+# pkg.go.dev / Go cache leftovers
+.cache/
