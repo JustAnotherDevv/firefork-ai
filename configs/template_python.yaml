@@ -1,0 +1,20 @@
+# firefork template — Python smoke-test. Boots Alpine, installs
+# py3-numpy, imports it once (warmup), then snapshots. Resulting
+# snapshot lets forks skip apk install + Python import on every
+# spawn.
+#
+# Verify by building this template and forking from the snapshot:
+#   sudo -E ./bin/seed-template --config configs/template_python.yaml
+#   ./bin/fork --template python/v1 --count 8
+name: python
+version: v1
+vcpus: 1
+mem_mib: 256
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  - apk add --no-cache py3-numpy
+warmup:
+  - python3 -c "import numpy; print('numpy', numpy.__version__, 'loaded')"
+warmup_sleep_ms: 500
+notes: post-numpy import, ready to fork

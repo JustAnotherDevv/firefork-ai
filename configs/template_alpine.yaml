@@ -1,0 +1,16 @@
+# firefork template — minimal Alpine baseline. Just boots, agent up,
+# no setup/warmup. Represents the "trivial workload" cold-start cost
+# (~boot + agent ready) for benchmark comparison against heavier
+# templates. Fork latency from this baseline should be ~1ms.
+#
+# Build:
+#   sudo -E ./bin/seed-template --config configs/template_alpine.yaml
+#   ./bin/fork --template alpine-base/v1 --count 8
+name: alpine-base
+version: v1
+vcpus: 1
+mem_mib: 128
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+warmup_sleep_ms: 200
+notes: trivial Alpine + agent only; benchmark baseline
