@@ -1,0 +1,23 @@
+# firefork template — scientific Python workload. Alpine + numpy +
+# pandas + scikit-learn warmed up. Substitutes for PyTorch in the
+# bench suite — PyTorch wheels assume glibc and don't ship for musl;
+# scientific Python (pandas/sklearn) is the closest common
+# equivalent for "heavy library import" cold-start cost.
+#
+# Expected cold-start: ~5-8s (apk install + import). Fork: ~1-5ms.
+#
+# Build:
+#   sudo -E ./bin/seed-template --config configs/template_python_sci.yaml
+name: python-sci
+version: v1
+vcpus: 2
+mem_mib: 512
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  - apk add --no-cache py3-numpy py3-pandas py3-scikit-learn
+warmup:
+  - python3 -c "import numpy, pandas, sklearn; print('libs loaded', numpy.__version__, pandas.__version__, sklearn.__version__)"
+warmup_sleep_ms: 500
+setup_timeout_ms: 180000
+notes: post numpy/pandas/sklearn import, ready to fork
