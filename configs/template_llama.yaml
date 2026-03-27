@@ -1,0 +1,46 @@
+# firefork AI workload template — Llama-3.2-1B-Instruct Q4_K_M.
+#
+# Build:
+#   bin/seed-template --config configs/template_llama.yaml --verbose
+#
+# Demo (after seeding):
+#   bin/fork --template llama-3.2-1b-q4/v1 --count 4
+#
+# What the warmup does:
+#   1. `llama-cli` with -n 0 forces the model file to be mapped + paged
+#      into guest RAM without generating tokens. By snapshot time the
+#      memfile reflects the model already resident.
+#   2. Launches `llama-server` listening on 127.0.0.1:8080 with the same
+#      model (using the now-warm page cache). The server stays running
+#      across the snapshot — forks resume with the HTTP listener live.
+#   3. Health-checks the server before snapshotting so we know it's up.
+name: llama-3.2-1b-q4
+version: v1
+vcpus: 2
+mem_mib: 3072
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/ubuntu-llama.ext4
+
+setup:
+  # Nothing — model + binary baked into rootfs at build time.
+  - true
+
+warmup:
+  # Minimal warmup: just verify llama-cli + libgomp load. Real
+  # inference is exercised by probe-inference post-fork (which
+  # pays the model-load cost on first call).
+  - /opt/llama/bin/llama-cli --version 2>&1 | head -5
+  # Page the model file into the host page cache so first-token
+  # post-fork doesn't have to read 770 MB from disk.
+  - cat /opt/models/llama-3.2-1b-q4.gguf > /dev/null
+
+warmup_sleep_ms: 2000
+warmup_timeout_ms: 300000
+setup_timeout_ms: 30000
+
+# Disable memfile compression for this first run — 1.5 GiB memfile zstd
+# is expensive (~700 ms compress) and the demo runs locally. Flip to
+# true (or omit) when pushing to Tigris.
+compress_memfile: false
+
+notes: model loaded into guest RAM; llama-server listening on :8080 (host-only)
