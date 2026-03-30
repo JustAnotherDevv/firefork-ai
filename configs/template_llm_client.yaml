@@ -1,0 +1,205 @@
+# firefork template -- "AI-agent sandbox that calls an external LLM API".
+#
+# What's in the snapshot:
+#   - curl + jq (Alpine packages, ~600 KB total)
+#   - Resolved DNS for openai/anthropic/openrouter/kilocode (warmup
+#     populates the resolver cache so per-fork first-call doesn't pay
+#     a DNS RTT)
+#   - A modular helper /usr/local/bin/llm-call that dispatches to the
+#     selected provider via $LLM_PROVIDER (openai | anthropic |
+#     openrouter | kilo | ollama). Each provider has baked-in defaults
+#     (endpoint, model, auth style, request shape, response extraction)
+#     plus per-call overrides via $LLM_ENDPOINT, $LLM_MODEL,
+#     $LLM_API_KEY, $LLM_MAX_TOKENS, $LLM_SYSTEM.
+#
+# Demo usage (after seed-template):
+#   ./bin/bench --template llm-client/v1 --def-path configs/template_llm_client.yaml \
+#               --mode fan-out --N 16,32 --sim-delay-ms 800 \
+#               --jailer /usr/local/bin/jailer --out results/llm-fanout.csv
+#
+# Real provider call from inside a fork (after `bin/fork --hold` keeps it alive):
+#   agent.Call({"cmd":"exec",
+#     "argv":["sh","-c","LLM_PROVIDER=openrouter LLM_API_KEY=$KEY /usr/local/bin/llm-call \"Hello\""]})
+#
+# IMPORTANT: keep this file ASCII-only. The Python agent's
+# canonical-JSON HMAC uses ensure_ascii=True; Go's canonical-JSON emits
+# raw UTF-8. Non-ASCII chars in baked-in scripts break signature
+# verification between host and guest (caught the hard way: em-dashes
+# in heredocs).
+name: llm-client
+version: v1
+vcpus: 1
+mem_mib: 128
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  - apk add --no-cache jq
+  # Bake the dispatcher into the rootfs so forks pick it up from the
+  # snapshot. Single-file design (no profile directory) for forkability
+  # and easy auditing. Quoted heredoc keeps $vars literal until runtime.
+  - |
+    cat > /usr/local/bin/llm-call <<'SCRIPT'
+    #!/bin/sh
+    # llm-call <prompt>
+    #
+    # Modular multi-provider inference dispatcher. Provider selected via
+    # $LLM_PROVIDER (default: openai). Supported out of the box:
+    #
+    #   openai       https://api.openai.com (gpt-4o-mini default)
+    #   anthropic    https://api.anthropic.com (claude-3-5-haiku-latest)
+    #   openrouter   https://openrouter.ai (llama-3.2-3b-instruct)
+    #   kilo         https://kilo.ai/api/openrouter (claude-3-haiku)
+    #   ollama       http://localhost:11434 (llama3.2:1b)
+    #
+    # Per-call overrides:
+    #   LLM_ENDPOINT     override the URL (e.g. self-hosted vLLM)
+    #   LLM_MODEL        override the model
+    #   LLM_API_KEY      auth token (provider-appropriate header applied)
+    #   LLM_MAX_TOKENS   default 64
+    #   LLM_SYSTEM       optional system prompt
+    #
+    # Any OpenAI-compatible service (Together, Groq, Fireworks, self-hosted
+    # vLLM/TGI, Ollama's /v1/chat/completions) works with LLM_PROVIDER=openai
+    # plus LLM_ENDPOINT + LLM_API_KEY.
+    #
+    # Stdout = assistant message. Non-zero exit + stderr = error.
+    set -eu
+
+    PROMPT="${1:-}"
+    [ -n "$PROMPT" ] || { echo "usage: llm-call <prompt>" >&2; exit 2; }
+
+    PROVIDER="${LLM_PROVIDER:-openai}"
+    MAX_TOKENS="${LLM_MAX_TOKENS:-64}"
+    SYSTEM="${LLM_SYSTEM:-}"
+    # Pull key from provider-specific env first, then generic LLM_API_KEY.
+    API_KEY="${LLM_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-${OPENROUTER_API_KEY:-${KILO_API_KEY:-}}}}}"
+
+    # Provider profile lookup. Sets:
+    #   D_ENDPOINT  default URL
+    #   D_MODEL     default model
+    #   AUTH_TYPE   bearer | x-api-key | none
+    #   BODY_SHAPE  openai | anthropic
+    case "$PROVIDER" in
+      openai)
+        D_ENDPOINT="https://api.openai.com/v1/chat/completions"
+        D_MODEL="gpt-4o-mini"
+        AUTH_TYPE="bearer"
+        BODY_SHAPE="openai"
+        ;;
+      anthropic)
+        D_ENDPOINT="https://api.anthropic.com/v1/messages"
+        D_MODEL="claude-3-5-haiku-latest"
+        AUTH_TYPE="x-api-key"
+        BODY_SHAPE="anthropic"
+        ;;
+      openrouter)
+        D_ENDPOINT="https://openrouter.ai/api/v1/chat/completions"
+        D_MODEL="meta-llama/llama-3.2-3b-instruct"
+        AUTH_TYPE="bearer"
+        BODY_SHAPE="openai"
+        ;;
+      kilo)
+        D_ENDPOINT="https://kilo.ai/api/openrouter/v1/chat/completions"
+        D_MODEL="anthropic/claude-3-haiku"
+        AUTH_TYPE="bearer"
+        BODY_SHAPE="openai"
+        ;;
+      ollama)
+        # Default points at guest-local; override LLM_ENDPOINT to reach a
+        # host-side Ollama (e.g. http://10.0.2.2:11434 with TAP networking,
+        # or http://<host-lan-ip>:11434 with bridge).
+        D_ENDPOINT="http://127.0.0.1:11434/v1/chat/completions"
+        D_MODEL="llama3.2:1b"
+        AUTH_TYPE="none"
+        BODY_SHAPE="openai"
+        ;;
+      *)
+        echo "unknown LLM_PROVIDER: $PROVIDER (supported: openai anthropic openrouter kilo ollama)" >&2
+        exit 2
+        ;;
+    esac
+
+    ENDPOINT="${LLM_ENDPOINT:-$D_ENDPOINT}"
+    MODEL="${LLM_MODEL:-$D_MODEL}"
+
+    # Build request body. Both shapes accept a messages array; anthropic
+    # carries the system prompt at the top level, openai shapes it as a
+    # role:"system" message.
+    if [ "$BODY_SHAPE" = "openai" ]; then
+      if [ -n "$SYSTEM" ]; then
+        BODY=$(jq -nc --arg m "$MODEL" --arg p "$PROMPT" --arg s "$SYSTEM" --argjson mt "$MAX_TOKENS" \
+          '{model:$m, messages:[{role:"system",content:$s},{role:"user",content:$p}], max_tokens:$mt}')
+      else
+        BODY=$(jq -nc --arg m "$MODEL" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
+          '{model:$m, messages:[{role:"user",content:$p}], max_tokens:$mt}')
+      fi
+      EXTRACT='.choices[0].message.content // .error.message // .error // "no-content"'
+    else
+      # anthropic
+      if [ -n "$SYSTEM" ]; then
+        BODY=$(jq -nc --arg m "$MODEL" --arg p "$PROMPT" --arg s "$SYSTEM" --argjson mt "$MAX_TOKENS" \
+          '{model:$m, system:$s, messages:[{role:"user",content:$p}], max_tokens:$mt}')
+      else
+        BODY=$(jq -nc --arg m "$MODEL" --arg p "$PROMPT" --argjson mt "$MAX_TOKENS" \
+          '{model:$m, messages:[{role:"user",content:$p}], max_tokens:$mt}')
+      fi
+      EXTRACT='.content[0].text // .error.message // .error // "no-content"'
+    fi
+
+    # Compose curl args via POSIX positional params (no arrays in sh).
+    set -- -sS --fail-with-body \
+      -H "Content-Type: application/json" \
+      -d "$BODY"
+
+    case "$AUTH_TYPE" in
+      bearer)
+        set -- -H "Authorization: Bearer $API_KEY" "$@"
+        ;;
+      x-api-key)
+        set -- -H "x-api-key: $API_KEY" "$@"
+        ;;
+      none)
+        : # no auth header
+        ;;
+    esac
+
+    # Anthropic API version pin.
+    if [ "$PROVIDER" = "anthropic" ]; then
+      set -- -H "anthropic-version: 2023-06-01" "$@"
+    fi
+
+    # OpenRouter and Kilo accept (and expect for usage attribution) the
+    # HTTP-Referer + X-Title pair. Setting both is harmless on other
+    # providers.
+    case "$PROVIDER" in
+      openrouter|kilo)
+        set -- -H "HTTP-Referer: https://github.com/JustAnotherDevv/firefork-ai" \
+               -H "X-Title: firefork" "$@"
+        ;;
+    esac
+
+    set -- "$@" "$ENDPOINT"
+
+    if ! RESPONSE=$(curl "$@" 2>&1); then
+      echo "$RESPONSE" >&2
+      exit 1
+    fi
+    echo "$RESPONSE" | jq -r "$EXTRACT"
+    SCRIPT
+  - chmod +x /usr/local/bin/llm-call
+warmup:
+  # Pre-resolve DNS for the supported providers so per-fork first call
+  # doesn't pay an RTT for the lookup. Ollama defaults to localhost so
+  # no DNS entry is needed.
+  - getent hosts api.openai.com     || true
+  - getent hosts api.anthropic.com  || true
+  - getent hosts openrouter.ai      || true
+  - getent hosts kilo.ai            || true
+warmup_sleep_ms: 200
+notes: |
+  AI-agent sandbox baseline. Carries curl + jq + the modular
+  /usr/local/bin/llm-call dispatcher (openai/anthropic/openrouter/kilo/
+  ollama). Pair with bench --mode fan-out to measure spawn-plus-call
+  wall-clock at N=1,4,16,32,64. Switch providers per-call via
+  $LLM_PROVIDER; override endpoint/model/key via $LLM_ENDPOINT,
+  $LLM_MODEL, $LLM_API_KEY.
