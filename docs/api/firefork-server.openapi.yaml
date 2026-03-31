@@ -1,0 +1,302 @@
+openapi: 3.1.0
+info:
+  title: firefork-server
+  description: |
+    HTTP API over the firefork fork pool. Same code paths as the
+    `bin/fork` and `bin/seed-template` CLIs; HTTP adds sub-ms overhead
+    over `Pool.Fork`.
+
+    All endpoints under `/v1/*` require Bearer-token auth via
+    `Authorization: Bearer <token>` matching the server's
+    `FIREFORK_AUTH_TOKEN` env. If the env is unset, the server runs in
+    DEMO mode (no auth, startup warning).
+
+    See [ADR-0005](../architecture/0005-http-orchestrator.md) for the
+    scope decision.
+  version: "0.1.1"
+  license:
+    name: MIT
+    url: https://github.com/JustAnotherDevv/firefork-ai/blob/main/LICENSE
+  contact:
+    name: firefork maintainers
+    url: https://github.com/JustAnotherDevv/firefork-ai
+
+servers:
+  - url: http://localhost:8080
+    description: Default local
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    ForkRequest:
+      type: object
+      required: [template, count]
+      properties:
+        template:
+          type: string
+          example: "llama-3.2-1b-q4/v1"
+          description: "Template identifier in <name>/<version> form."
+        count:
+          type: integer
+          minimum: 1
+          maximum: 256
+          example: 4
+        combined_load_resume:
+          type: boolean
+          default: false
+          description: |
+            Use a single `/snapshot/load` with `resume_vm=true` instead
+            of the default load-then-PATCH-resume sequence. Saves one
+            HTTP round-trip per fork.
+        timeout_ms:
+          type: integer
+          default: 60000
+          description: "Per-request dispatch timeout."
+
+    ForkInfo:
+      type: object
+      required: [id, vsock_uds, work_dir, latency_ms, preload_ms, e2e_ms, template_key]
+      properties:
+        id: { type: string, example: "5e0b1f2c-..." }
+        vsock_uds: { type: string, example: "/srv/jailer/firecracker/5e0b1f2c/root/vsock.sock" }
+        work_dir: { type: string }
+        latency_ms: { type: integer, description: "Resume-only latency for this fork" }
+        preload_ms: { type: integer, description: "Per-slot spawn + preload cost (warm/ultra-warm path)" }
+        e2e_ms: { type: integer, description: "latency_ms + preload_ms" }
+        template_key: { type: string, example: "llama-3.2-1b-q4/v1" }
+        error:
+          type: string
+          description: "Set if this fork failed; latency fields are best-effort."
+
+    ForkResponse:
+      type: object
+      required: [forks]
+      properties:
+        forks:
+          type: array
+          items: { $ref: "#/components/schemas/ForkInfo" }
+
+    ExecRequest:
+      type: object
+      required: [fork_id]
+      properties:
+        fork_id: { type: string }
+        cmd:
+          type: string
+          description: |
+            Shell command (the agent runs `sh -c <cmd>`). Mutually
+            exclusive with `argv`. Prefer `argv` for untrusted input;
+            see `internal/workload/doc.go` for the attack surface.
+        argv:
+          type: array
+          items: { type: string }
+          description: "Exec-form arguments. Preferred for untrusted input."
+        timeout_ms:
+          type: integer
+          default: 30000
+
+    ExecResponse:
+      type: object
+      required: [fork_id, latency_ms, result]
+      properties:
+        fork_id: { type: string }
+        latency_ms: { type: integer }
+        result:
+          type: object
+          description: |
+            Raw agent reply. Standard fields: `stdout`, `stderr`,
+            `exit_code` (when `cmd` or `argv` is set). Other commands
+            (`read_file`, `write_file`) return command-specific fields.
+          additionalProperties: true
+
+    TemplateInfo:
+      type: object
+      required: [name, version, key, vcpus, mem_mib, created_at, has_local_snapshot]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        key: { type: string, example: "python/v1" }
+        vcpus: { type: integer }
+        mem_mib: { type: integer }
+        created_at: { type: string, format: date-time }
+        notes: { type: string }
+        has_local_snapshot: { type: boolean }
+
+    Metrics:
+      type: object
+      required: [live_forks, total_forks, total_execs, total_errs]
+      properties:
+        live_forks: { type: integer }
+        total_forks: { type: integer }
+        total_execs: { type: integer }
+        total_errs: { type: integer }
+        warm_pool:
+          type: object
+          description: "Present when --warm-pool > 0"
+          properties:
+            takes: { type: integer }
+            drains: { type: integer }
+            hit_rate_pct: { type: number }
+            refill_errs: { type: integer }
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      tags: [Ops]
+      responses:
+        "200":
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  live_forks: { type: integer }
+
+  /v1/fork:
+    post:
+      summary: Spawn N forks of a template
+      tags: [Fork]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForkRequest" }
+      responses:
+        "200":
+          description: Forks spawned (individual forks may have errors; check `forks[].error`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ForkResponse" }
+        "400":
+          description: Bad request (missing fields, count out of range).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Missing or invalid Bearer token.
+        "404":
+          description: Template not in registry.
+        "424":
+          description: Template registered but local snapshot missing.
+        "500":
+          description: Fork dispatch failed.
+
+  /v1/exec:
+    post:
+      summary: Run a command inside a live fork via vsock
+      tags: [Exec]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: Command completed (check `result.exit_code`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecResponse" }
+        "400":
+          description: Bad request.
+        "401":
+          description: Missing or invalid Bearer token.
+        "404":
+          description: Fork not live.
+        "502":
+          description: Vsock call failed (agent unreachable, HMAC mismatch).
+
+  /v1/forks/{id}:
+    delete:
+      summary: Terminate one fork
+      tags: [Fork]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Fork released cleanly.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  released: { type: boolean }
+        "202":
+          description: Release initiated but teardown had errors.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  warning: { type: string }
+        "404":
+          description: Fork not live.
+
+  /v1/forks:
+    get:
+      summary: List live forks
+      tags: [Fork]
+      responses:
+        "200":
+          description: Snapshot of live forks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  forks:
+                    type: array
+                    items: { $ref: "#/components/schemas/ForkInfo" }
+
+  /v1/templates:
+    get:
+      summary: List registered templates
+      tags: [Template]
+      responses:
+        "200":
+          description: Registry snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  templates:
+                    type: array
+                    items: { $ref: "#/components/schemas/TemplateInfo" }
+
+  /v1/metrics:
+    get:
+      summary: Pool + warm-pool counters
+      tags: [Ops]
+      description: |
+        JSON metrics. For Prometheus, scrape with the Bearer token and
+        post-process; native Prom-text endpoint is a v0.3 todo.
+      responses:
+        "200":
+          description: Counters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
