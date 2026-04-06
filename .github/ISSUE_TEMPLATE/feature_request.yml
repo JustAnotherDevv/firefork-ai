@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a new feature or enhancement
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening, please check `docs/architecture/` (ADRs) -- your
+        idea may already be discussed.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: User-facing scenario, not the proposed solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: API surface, CLI flags, HTTP endpoints, or behavior change.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you weigh?
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Compatibility impact
+      options:
+        - Additive only (no breakage)
+        - Breaks existing CLI flag / HTTP route
+        - Breaks library API in internal/
+        - Changes snapshot format / on-disk schema
+    validations:
+      required: true

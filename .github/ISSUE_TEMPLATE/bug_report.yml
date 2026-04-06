@@ -1,0 +1,64 @@
+name: Bug report
+description: A reproducible bug or regression
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Before opening, please confirm:
+        - This is not a security issue. Security issues go through `SECURITY.md` (private vuln reporting).
+        - You've searched existing issues — duplicates will be closed.
+
+  - type: input
+    id: version
+    attributes:
+      label: firefork version
+      description: Output of `firefork --version` or the release tag you tested.
+      placeholder: v0.1.1
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host environment
+      description: Kernel + distro + virt setup
+      placeholder: "Ubuntu 24.04, kernel 6.8, KVM, bare metal"
+    validations:
+      required: true
+
+  - type: input
+    id: firecracker
+    attributes:
+      label: Firecracker version
+      placeholder: v1.10.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Exact commands. Include template config if relevant.
+      placeholder: |
+        1. `sudo -E bin/seed-template --config configs/template_python.yaml --jailer /usr/local/bin/jailer`
+        2. `sudo -E bin/fork --template python/v1 --count 4`
+        3. Observed: ...
+        4. Expected: ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: stderr from the failing command (`--log-json` preferred). Redact paths if sensitive.
+      render: text
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Workarounds tried, hypotheses, etc.

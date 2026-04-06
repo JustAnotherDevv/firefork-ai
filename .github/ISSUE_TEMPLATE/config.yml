@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/JustAnotherDevv/firefork-ai/discussions
+    about: Open-ended questions, design discussion, "is this the right tool for ..."
