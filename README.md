@@ -8,42 +8,6 @@
 
 ---
 
-## Headline
-
-> **Llama-3.2-1B-Q4 inference sandbox: 32-second cold start to 6-millisecond fork. 5,510x faster.**
->
-> **32 parallel AI-agent sub-queries in 1.3 seconds — same time as one LLM API call. A serial-spawn baseline would pay 17 seconds for the same workload.**
-
-![Llama hero plot](results/hero_llama-3.2-1b-q4_v1.png)
-
-### Cold-start vs fork across 4 templates
-
-| Template | Cold-start | Fork-cold | **Speedup** |
-|---|---:|---:|---:|
-| alpine-base | 4.72 s | 5.09 ms | **927x** |
-| python (numpy) | 4.44 s | 5.33 ms | **833x** |
-| python-sci (pandas + sklearn) | 5.10 s | 5.54 ms | **920x** |
-| **llama-3.2-1b-q4** | **32.34 s** | **5.87 ms** | **5,510x** |
-
-Numbers: median e2e_ms across 10 trials at N=1, jailed (per-fork chroot, uid drop). Measured on a single Multipass Ubuntu 24.04 VM (4 vCPU, 4 GiB RAM, nested KVM via Hyper-V) on an Intel i5-11400 Windows 10 Pro host.
-
-### Fan-out: N parallel agent sub-queries
-
-Each fork dispatches a simulated 800ms LLM call (`sleep 800ms; echo ok` via vsock-agent exec). Bench at N=1, 4, 16, 32.
-
-![Fan-out wall-clock](results/fanout_walclock.png)
-
-| N parallel sandboxes | firefork (p50) | parallel-spawn baseline | serial-spawn baseline | Speedup vs serial |
-|---:|---:|---:|---:|---:|
-| 1 | 856 ms | 1.3 s | 1.3 s | 1.5x |
-| 4 | 871 ms | 1.3 s | 2.8 s | 3.2x |
-| 16 | 1.08 s | 1.3 s | 8.8 s | **8.1x** |
-| 32 | 1.32 s | 1.3 s | 16.8 s | **12.7x** |
-
-Baselines assume 500ms cold spawn + 800ms LLM call. Real-world serverless platforms sit between parallel-best and serial-worst depending on quota and region warmth.
-
----
-
 ## What it does
 
 Snapshot a Firecracker microVM (any state: post-boot, post-library-import, post-model-load) to a `(memfile, state)` file pair. Then **fork N copies in ~5ms each** so AI agents can:
@@ -93,6 +57,42 @@ Snapshot a Firecracker microVM (any state: post-boot, post-library-import, post-
 Stock kernel, stock Firecracker, Go orchestrator over [`firecracker-go-sdk`](https://github.com/firecracker-microvm/firecracker-go-sdk). Forks share the parent memfile via per-chroot hardlink + `MAP_PRIVATE` mmap so the kernel handles copy-on-write transparently. Jailer chroots provide per-fork filesystem isolation + uid drop to a non-privileged `firefork-jail` user.
 
 Full design: [docs/architecture/](./docs/architecture/) (ADRs).
+
+---
+
+## Performance
+
+> **Llama-3.2-1B-Q4 inference sandbox: 32-second cold start to 6-millisecond fork. 5,510x faster.**
+>
+> **32 parallel AI-agent sub-queries in 1.3 seconds — same time as one LLM API call. A serial-spawn baseline would pay 17 seconds for the same workload.**
+
+![Llama hero plot](results/hero_llama-3.2-1b-q4_v1.png)
+
+### Cold-start vs fork across 4 templates
+
+| Template | Cold-start | Fork-cold | **Speedup** |
+|---|---:|---:|---:|
+| alpine-base | 4.72 s | 5.09 ms | **927x** |
+| python (numpy) | 4.44 s | 5.33 ms | **833x** |
+| python-sci (pandas + sklearn) | 5.10 s | 5.54 ms | **920x** |
+| **llama-3.2-1b-q4** | **32.34 s** | **5.87 ms** | **5,510x** |
+
+Numbers: median e2e_ms across 10 trials at N=1, jailed (per-fork chroot, uid drop). Measured on a single Multipass Ubuntu 24.04 VM (4 vCPU, 4 GiB RAM, nested KVM via Hyper-V) on an Intel i5-11400 Windows 10 Pro host.
+
+### Fan-out: N parallel agent sub-queries
+
+Each fork dispatches a simulated 800ms LLM call (`sleep 800ms; echo ok` via vsock-agent exec). Bench at N=1, 4, 16, 32.
+
+![Fan-out wall-clock](results/fanout_walclock.png)
+
+| N parallel sandboxes | firefork (p50) | parallel-spawn baseline | serial-spawn baseline | Speedup vs serial |
+|---:|---:|---:|---:|---:|
+| 1 | 856 ms | 1.3 s | 1.3 s | 1.5x |
+| 4 | 871 ms | 1.3 s | 2.8 s | 3.2x |
+| 16 | 1.08 s | 1.3 s | 8.8 s | **8.1x** |
+| 32 | 1.32 s | 1.3 s | 16.8 s | **12.7x** |
+
+Baselines assume 500ms cold spawn + 800ms LLM call. Real-world serverless platforms sit between parallel-best and serial-worst depending on quota and region warmth.
 
 ---
 
