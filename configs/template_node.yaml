@@ -1,0 +1,63 @@
+# firefork template -- AI-agent sandbox running Node.js with the
+# common HTTP / scraping / validation libraries pre-loaded into V8.
+#
+# Excludes Vercel AI SDK on purpose: the sandbox stays library-
+# agnostic so it can talk to any provider via plain HTTP. Pair with
+# the llm-client template's dispatcher (or call directly with axios).
+#
+# Expected cold-start: ~2-4s (apk + npm install + V8 require pass).
+# Fork: ~5ms.
+#
+# Build:
+#   sudo -E ./bin/seed-template --config configs/template_node.yaml \
+#     --jailer /usr/local/bin/jailer
+name: node
+version: v1
+vcpus: 1
+mem_mib: 256
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  - apk add --no-cache nodejs npm
+  - mkdir -p /opt/agent
+  - cd /opt/agent && npm init -y >/dev/null
+  - |
+    cd /opt/agent && npm install --no-audit --no-fund --silent \
+      axios@^1.7.0 \
+      cheerio@^1.0.0 \
+      zod@^3.23.0 \
+      dotenv@^16.4.0 \
+      js-yaml@^4.1.0 \
+      node-fetch@^3.3.0 \
+      fast-glob@^3.3.0 \
+      chalk@^5.3.0 \
+      pino@^9.0.0
+warmup:
+  # Pre-page V8 + pull every bundled module into memory so the first
+  # require() in a fork is a pure cache hit.
+  - |
+    cd /opt/agent && node -e "
+      require('axios');
+      require('cheerio');
+      require('zod');
+      require('dotenv');
+      require('js-yaml');
+      require('node-fetch');
+      require('fast-glob');
+      require('chalk');
+      require('pino');
+      console.log('warmed node', process.versions.node);
+    "
+  # Pre-resolve DNS for the npm registry + common LLM hosts so the
+  # first outbound call in a fork doesn't pay an A-record RTT.
+  - getent hosts registry.npmjs.org || true
+  - getent hosts api.openai.com     || true
+  - getent hosts api.anthropic.com  || true
+  - getent hosts openrouter.ai      || true
+warmup_sleep_ms: 300
+warmup_timeout_ms: 120000
+setup_timeout_ms: 240000
+notes: |
+  Node.js 22 agent sandbox. Bundled: axios, cheerio, zod, dotenv,
+  js-yaml, node-fetch, fast-glob, chalk, pino. No Vercel AI SDK;
+  make LLM calls via axios or via the llm-client template.
