@@ -1,0 +1,75 @@
+# firefork template -- headless Chromium + Playwright for browser-
+# using agents (scrapers, form fillers, screenshot bots, automated
+# QA). Heaviest sandbox in the set: Chromium binary + V8 + the
+# rendering pipeline all resident in the snapshot.
+#
+# Expected cold-start: ~5-8s (apk install Chromium + npm + V8 warmup
+# + first Chromium launch). Fork: ~5ms. Snapshot: ~600 MB.
+#
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 stops Playwright from pulling
+# its own bundled Chromium; we point it at the Alpine system one via
+# PLAYWRIGHT_BROWSERS_PATH=0 + chromium-browser symlink.
+#
+# Build:
+#   sudo -E ./bin/seed-template --config configs/template_chrome_headless.yaml \
+#     --jailer /usr/local/bin/jailer
+name: chrome-headless
+version: v1
+vcpus: 2
+mem_mib: 1024
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  # Chromium + its font + media + nss deps. Alpine's chromium pulls
+  # most of these transitively but enumerating them keeps the build
+  # reproducible across rootfs versions.
+  - apk add --no-cache chromium chromium-chromedriver
+  - apk add --no-cache nss freetype freetype-dev harfbuzz ca-certificates
+  - apk add --no-cache ttf-freefont font-noto font-noto-emoji
+  - apk add --no-cache nodejs npm
+  # Symlink chromium-browser at the location playwright-core expects.
+  - ln -sf /usr/bin/chromium-browser /usr/bin/chromium || true
+  - mkdir -p /opt/agent
+  - cd /opt/agent && npm init -y >/dev/null
+  - |
+    cd /opt/agent && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+      npm install --no-audit --no-fund --silent \
+      playwright-core@^1.46.0 \
+      axios@^1.7.0 \
+      zod@^3.23.0
+warmup:
+  # Pre-page V8 + Playwright + first Chromium launch. The launch
+  # forks the Chromium process tree, opens a blank page, then closes
+  # so the snapshot captures a warm V8 + a freshly-recycled browser
+  # process pool. First page.goto() in a fork pays only the navigate.
+  - |
+    cd /opt/agent && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 node -e "
+      const { chromium } = require('playwright-core');
+      (async () => {
+        const b = await chromium.launch({
+          executablePath: '/usr/bin/chromium-browser',
+          headless: true,
+          args: ['--no-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+        });
+        const ctx = await b.newContext();
+        const p = await ctx.newPage();
+        await p.goto('about:blank');
+        console.log('warmed chromium', process.versions.node);
+        await ctx.close();
+        await b.close();
+      })().catch(e => { console.error(e); process.exit(1); });
+    "
+  # DNS warm for typical scraping targets.
+  - getent hosts github.com               || true
+  - getent hosts www.google.com           || true
+  - getent hosts en.wikipedia.org         || true
+  - getent hosts registry.npmjs.org       || true
+warmup_sleep_ms: 500
+warmup_timeout_ms: 240000
+setup_timeout_ms: 300000
+notes: |
+  Headless Chromium + Playwright sandbox for browser-using agents.
+  --no-sandbox is required because the jailer chroot already provides
+  the isolation; Chromium's sandbox layer would need extra capabilities
+  we deliberately drop. Pair with the shell-tools or node templates
+  when richer post-processing is needed.

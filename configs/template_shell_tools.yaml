@@ -1,0 +1,50 @@
+# firefork template -- universal "agent runs shell commands" sandbox.
+# Bundles the CLI tools that show up in 80% of real agent workloads:
+# HTTP fetch, JSON/YAML munging, code search, git, pandoc. No language
+# runtime (no node, no python beyond the agent itself); pair with the
+# node or python-sci templates when a real runtime is needed.
+#
+# Expected cold-start: ~600ms-1s (apk install dominates). Fork: ~5ms.
+#
+# Build:
+#   sudo -E ./bin/seed-template --config configs/template_shell_tools.yaml \
+#     --jailer /usr/local/bin/jailer
+name: shell-tools
+version: v1
+vcpus: 1
+mem_mib: 192
+kernel: /var/lib/firefork/kernels/vmlinux-5.10.223
+rootfs: /var/lib/firefork/rootfs/alpine-firefork.ext4
+setup:
+  # Core fetch + transform
+  - apk add --no-cache curl wget jq yq
+  # Code/file tooling
+  - apk add --no-cache git github-cli openssh-client ripgrep fd tree
+  # Text processing
+  - apk add --no-cache pandoc gettext bash coreutils findutils gawk sed
+  # Diff + patch
+  - apk add --no-cache patch diffutils
+  # Network diagnostics (useful for agent debugging an HTTP target)
+  - apk add --no-cache bind-tools netcat-openbsd
+  # Make /tmp world-writable in case an agent shells in as a lower uid
+  - chmod 1777 /tmp
+warmup:
+  # Touch each binary so its inode + page cache are loaded.
+  - |
+    for b in curl wget jq yq git gh rg fd tree pandoc envsubst bash awk sed patch diff dig nc; do
+      command -v "$b" >/dev/null && "$b" --version >/dev/null 2>&1 || true
+    done
+  # Pre-resolve DNS for hosts an agent typically hits first.
+  - getent hosts github.com           || true
+  - getent hosts api.github.com       || true
+  - getent hosts registry.npmjs.org   || true
+  - getent hosts pypi.org             || true
+  - getent hosts raw.githubusercontent.com || true
+warmup_sleep_ms: 200
+warmup_timeout_ms: 60000
+setup_timeout_ms: 240000
+notes: |
+  Universal shell-command agent sandbox. No language runtime; bundles
+  curl, wget, jq, yq, git, gh, ripgrep, fd, tree, pandoc, envsubst,
+  bash, coreutils, findutils, gawk, sed, patch, diff, bind-tools,
+  netcat. Pair with node or python-sci when an actual runtime is needed.

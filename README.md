@@ -104,7 +104,7 @@ git clone https://github.com/JustAnotherDevv/firefork-ai && cd firefork-ai
 make setup-jailer                            # creates firefork-jail uid 10000
 
 # Build templates (~3-30s each):
-for cfg in alpine python python_sci node llama llm_client; do
+for cfg in alpine python python_sci node shell_tools chrome_headless llama llm_client; do
   sudo -E bin/seed-template --config configs/template_${cfg}.yaml --jailer /usr/local/bin/jailer
 done
 
@@ -157,7 +157,7 @@ examples/
   http-client/{go,python}/  # HTTP client demos
   mcts-branching/   # fan-out N showcase
 images/             # rootfs + kernel build scripts
-configs/            # template YAMLs (alpine, python, python-sci, node, llama, llm-client)
+configs/            # template YAMLs (alpine, python, python-sci, node, shell-tools, chrome-headless, llama, llm-client)
 notebooks/          # benchmark analysis (Python)
 results/            # CSVs + PNGs
 scripts/            # setup-jailer.sh + diag-jailer.sh + rootfs builders
